@@ -315,6 +315,7 @@ export async function getSections() {
 export async function navigateSection(name) {
   ensureConnected();
   await dismissPendingErrors();
+  if (highlightMode) try { await highlight(name); await page.waitForTimeout(500); await unhighlight(); } catch {}
   const result = await page.evaluate(navigateSectionScript(name));
   if (result?.error) throw new Error(`navigateSection: "${name}" not found. Available: ${result.available?.join(', ') || 'none'}`);
 
@@ -336,6 +337,7 @@ export async function getCommands() {
 export async function openCommand(name) {
   ensureConnected();
   await dismissPendingErrors();
+  if (highlightMode) try { await highlight(name); await page.waitForTimeout(500); await unhighlight(); } catch {}
   const formBefore = await page.evaluate(detectFormScript());
   const result = await page.evaluate(openCommandScript(name));
   if (result?.error) throw new Error(`openCommand: "${name}" not found. Available: ${result.available?.join(', ') || 'none'}`);
@@ -1089,7 +1091,7 @@ export async function fillFields(fields) {
 export async function clickElement(text, { dblclick } = {}) {
   ensureConnected();
   await dismissPendingErrors();
-  if (highlightMode) try { await highlight(text); await page.waitForTimeout(500); } catch {}
+  if (highlightMode) try { await highlight(text); await page.waitForTimeout(500); await unhighlight(); } catch {}
   try {
 
   // First check if there's a confirmation dialog — click matching button
@@ -1371,7 +1373,7 @@ export async function selectValue(fieldName, searchText) {
     btn = await page.evaluate(findFieldButtonScript(formNum, fieldName, 'CB'));
   }
   if (btn?.error) return btn;
-  if (highlightMode) try { await highlight(fieldName); await page.waitForTimeout(500); } catch {}
+  if (highlightMode) try { await highlight(fieldName); await page.waitForTimeout(500); await unhighlight(); } catch {}
   try {
 
   // Auto-enable DCS checkbox if resolved via label
@@ -1462,9 +1464,6 @@ export async function selectValue(fieldName, searchText) {
       return true;
     })()`);
   }
-
-  // Remove highlight before DLB click — overlay would cover dropdown/selection form
-  if (highlightMode) try { await unhighlight(); } catch {}
 
   // 2. Click DLB (handle funcPanel / surface overlay intercept)
   const dlbSel = `[id="${btn.buttonId}"]`;
@@ -2665,64 +2664,66 @@ export async function highlight(text, opts = {}) {
 
   let elId = null;
 
-  // 0. Try section or command (outside form scope)
-  elId = await page.evaluate(`(() => {
-    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
-    const target = ${JSON.stringify(normYo(text.toLowerCase()))};
-    // Sections
-    const secs = [...document.querySelectorAll('[id^="themesCell_theme_"]')];
-    let el = secs.find(e => norm(e.innerText).toLowerCase() === target);
-    if (!el) el = secs.find(e => norm(e.innerText).toLowerCase().includes(target));
-    if (el) return el.id;
-    // Commands
-    const cmds = [...document.querySelectorAll('[id^="cmd_"][id$="_txt"]')].filter(e => e.offsetWidth > 0);
-    el = cmds.find(e => norm(e.innerText).toLowerCase() === target);
-    if (!el) el = cmds.find(e => norm(e.innerText).toLowerCase().includes(target));
-    if (el) return el.id;
-    return null;
-  })()`);
-
-  // 1-2. Form-scoped search (buttons, links, fields, grid rows)
-  if (!elId) {
-    const formNum = await page.evaluate(detectFormScript());
-    if (formNum !== null) {
-      // 1. Try button/link/tab/gridRow via findClickTargetScript
-      const target = await page.evaluate(findClickTargetScript(formNum, text));
-      if (target && !target.error) {
-        if (target.id) {
-          elId = target.id;
-        } else if (target.x && target.y) {
-          // Grid row — find the gridLine element and tag it
-          elId = await page.evaluate(`(() => {
-            const p = ${JSON.stringify(`form${formNum}_`)};
-            const grid = document.querySelector('[id^="' + p + '"].grid');
-            if (!grid) return null;
-            const body = grid.querySelector('.gridBody');
-            if (!body) return null;
-            const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
-            const target = ${JSON.stringify(normYo(text.toLowerCase()))};
-            for (const line of body.querySelectorAll('.gridLine')) {
-              const cells = [...line.querySelectorAll('.gridBoxText')].filter(b => b.offsetWidth > 0);
-              const rowText = cells.map(b => b.innerText?.trim() || '').join(' ').toLowerCase().replace(/ё/gi, 'е');
-              if (rowText.includes(target)) {
-                if (!line.id) line.id = '__wt_hl_tmp';
-                return line.id;
-              }
+  // 1. Form-scoped search FIRST (buttons, links, fields, grid rows)
+  // Priority: form elements > sections/commands — avoids false matches
+  // like "ОК" matching section "Покупки" via .includes()
+  const formNum = await page.evaluate(detectFormScript());
+  if (formNum !== null) {
+    // 1a. Try button/link/tab/gridRow via findClickTargetScript
+    const target = await page.evaluate(findClickTargetScript(formNum, text));
+    if (target && !target.error) {
+      if (target.id) {
+        elId = target.id;
+      } else if (target.x && target.y) {
+        // Grid row — find the gridLine element and tag it
+        elId = await page.evaluate(`(() => {
+          const p = ${JSON.stringify(`form${formNum}_`)};
+          const grid = document.querySelector('[id^="' + p + '"].grid');
+          if (!grid) return null;
+          const body = grid.querySelector('.gridBody');
+          if (!body) return null;
+          const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+          const target = ${JSON.stringify(normYo(text.toLowerCase()))};
+          for (const line of body.querySelectorAll('.gridLine')) {
+            const cells = [...line.querySelectorAll('.gridBoxText')].filter(b => b.offsetWidth > 0);
+            const rowText = cells.map(b => b.innerText?.trim() || '').join(' ').toLowerCase().replace(/ё/gi, 'е');
+            if (rowText.includes(target)) {
+              if (!line.id) line.id = '__wt_hl_tmp';
+              return line.id;
             }
-            return null;
-          })()`);
-        }
-      }
-
-      // 2. If not found as button — try as field via resolveFieldsScript
-      if (!elId) {
-        const dummyFields = { [text]: '' };
-        const resolved = await page.evaluate(resolveFieldsScript(formNum, dummyFields));
-        if (resolved?.length > 0 && !resolved[0].error && resolved[0].inputId) {
-          elId = resolved[0].inputId;
-        }
+          }
+          return null;
+        })()`);
       }
     }
+
+    // 1b. If not found as button — try as field via resolveFieldsScript
+    if (!elId) {
+      const dummyFields = { [text]: '' };
+      const resolved = await page.evaluate(resolveFieldsScript(formNum, dummyFields));
+      if (resolved?.length > 0 && !resolved[0].error && resolved[0].inputId) {
+        elId = resolved[0].inputId;
+      }
+    }
+  }
+
+  // 2. Fallback: section or command (outside form scope)
+  if (!elId) {
+    elId = await page.evaluate(`(() => {
+      const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+      const target = ${JSON.stringify(normYo(text.toLowerCase()))};
+      // Sections
+      const secs = [...document.querySelectorAll('[id^="themesCell_theme_"]')];
+      let el = secs.find(e => norm(e.innerText).toLowerCase() === target);
+      if (!el) el = secs.find(e => norm(e.innerText).toLowerCase().includes(target));
+      if (el) return el.id;
+      // Commands
+      const cmds = [...document.querySelectorAll('[id^="cmd_"][id$="_txt"]')].filter(e => e.offsetWidth > 0);
+      el = cmds.find(e => norm(e.innerText).toLowerCase() === target);
+      if (!el) el = cmds.find(e => norm(e.innerText).toLowerCase().includes(target));
+      if (el) return el.id;
+      return null;
+    })()`);
   }
 
   if (!elId) throw new Error(`highlight: "${text}" not found`);
