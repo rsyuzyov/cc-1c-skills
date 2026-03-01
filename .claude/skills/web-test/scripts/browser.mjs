@@ -2665,45 +2665,81 @@ export async function highlight(text, opts = {}) {
 
   let elId = null;
 
-  // 1. Form-scoped search FIRST (buttons, links, fields, grid rows)
+  // 0. Open submenu/popup — highest priority (submenu overlays the form,
+  // so form search would match grid rows behind the popup)
+  const popupItems = await page.evaluate(readSubmenuScript());
+  if (Array.isArray(popupItems) && popupItems.length > 0) {
+    const target = normYo(text.toLowerCase());
+    let found = popupItems.find(i => normYo(i.name.toLowerCase()) === target);
+    if (!found) found = popupItems.find(i => normYo(i.name.toLowerCase()).startsWith(target));
+    if (!found) found = popupItems.find(i => normYo(i.name.toLowerCase()).includes(target));
+    if (found) {
+      // 1C duplicates IDs in clouds — getElementById returns the hidden copy.
+      // Use elementFromPoint to find the visible element and get its actual rect.
+      await page.evaluate(({ x, y, color, padding }) => {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return;
+        const block = el.closest('.submenuBlock') || el.closest('a.press') || el;
+        const r = block.getBoundingClientRect();
+        let div = document.getElementById('__web_test_highlight');
+        if (!div) {
+          div = document.createElement('div');
+          div.id = '__web_test_highlight';
+          document.body.appendChild(div);
+        }
+        div.style.cssText = [
+          'position:fixed', 'pointer-events:none', 'z-index:999998',
+          `top:${r.y - padding}px`, `left:${r.x - padding}px`,
+          `width:${r.width + padding * 2}px`, `height:${r.height + padding * 2}px`,
+          `outline:3px solid ${color}`, 'border-radius:4px',
+          `box-shadow:0 0 16px ${color}80`,
+        ].join(';');
+      }, { x: found.x, y: found.y, color, padding });
+      return; // overlay placed, done
+    }
+  }
+
+  // 1. Form-scoped search (buttons, links, fields, grid rows)
   // Priority: form elements > sections/commands — avoids false matches
   // like "ОК" matching section "Покупки" via .includes()
-  const formNum = await page.evaluate(detectFormScript());
-  if (formNum !== null) {
-    // 1a. Try button/link/tab/gridRow via findClickTargetScript
-    const target = await page.evaluate(findClickTargetScript(formNum, text));
-    if (target && !target.error) {
-      if (target.id) {
-        elId = target.id;
-      } else if (target.x && target.y) {
-        // Grid row — find the gridLine element and tag it
-        elId = await page.evaluate(`(() => {
-          const p = ${JSON.stringify(`form${formNum}_`)};
-          const grid = document.querySelector('[id^="' + p + '"].grid');
-          if (!grid) return null;
-          const body = grid.querySelector('.gridBody');
-          if (!body) return null;
-          const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
-          const target = ${JSON.stringify(normYo(text.toLowerCase()))};
-          for (const line of body.querySelectorAll('.gridLine')) {
-            const cells = [...line.querySelectorAll('.gridBoxText')].filter(b => b.offsetWidth > 0);
-            const rowText = cells.map(b => b.innerText?.trim() || '').join(' ').toLowerCase().replace(/ё/gi, 'е');
-            if (rowText.includes(target)) {
-              if (!line.id) line.id = '__wt_hl_tmp';
-              return line.id;
+  if (!elId) {
+    const formNum = await page.evaluate(detectFormScript());
+    if (formNum !== null) {
+      // 1a. Try button/link/tab/gridRow via findClickTargetScript
+      const target = await page.evaluate(findClickTargetScript(formNum, text));
+      if (target && !target.error) {
+        if (target.id) {
+          elId = target.id;
+        } else if (target.x && target.y) {
+          // Grid row — find the gridLine element and tag it
+          elId = await page.evaluate(`(() => {
+            const p = ${JSON.stringify(`form${formNum}_`)};
+            const grid = document.querySelector('[id^="' + p + '"].grid');
+            if (!grid) return null;
+            const body = grid.querySelector('.gridBody');
+            if (!body) return null;
+            const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+            const target = ${JSON.stringify(normYo(text.toLowerCase()))};
+            for (const line of body.querySelectorAll('.gridLine')) {
+              const cells = [...line.querySelectorAll('.gridBoxText')].filter(b => b.offsetWidth > 0);
+              const rowText = cells.map(b => b.innerText?.trim() || '').join(' ').toLowerCase().replace(/ё/gi, 'е');
+              if (rowText.includes(target)) {
+                if (!line.id) line.id = '__wt_hl_tmp';
+                return line.id;
+              }
             }
-          }
-          return null;
-        })()`);
+            return null;
+          })()`);
+        }
       }
-    }
 
-    // 1b. If not found as button — try as field via resolveFieldsScript
-    if (!elId) {
-      const dummyFields = { [text]: '' };
-      const resolved = await page.evaluate(resolveFieldsScript(formNum, dummyFields));
-      if (resolved?.length > 0 && !resolved[0].error && resolved[0].inputId) {
-        elId = resolved[0].inputId;
+      // 1b. If not found as button — try as field via resolveFieldsScript
+      if (!elId) {
+        const dummyFields = { [text]: '' };
+        const resolved = await page.evaluate(resolveFieldsScript(formNum, dummyFields));
+        if (resolved?.length > 0 && !resolved[0].error && resolved[0].inputId) {
+          elId = resolved[0].inputId;
+        }
       }
     }
   }
@@ -2713,14 +2749,16 @@ export async function highlight(text, opts = {}) {
     elId = await page.evaluate(`(() => {
       const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
       const target = ${JSON.stringify(normYo(text.toLowerCase()))};
-      // Sections
+      // Sections (exact → startsWith → includes)
       const secs = [...document.querySelectorAll('[id^="themesCell_theme_"]')];
       let el = secs.find(e => norm(e.innerText).toLowerCase() === target);
+      if (!el) el = secs.find(e => norm(e.innerText).toLowerCase().startsWith(target));
       if (!el) el = secs.find(e => norm(e.innerText).toLowerCase().includes(target));
       if (el) return el.id;
-      // Commands
+      // Commands (exact → startsWith → includes)
       const cmds = [...document.querySelectorAll('[id^="cmd_"][id$="_txt"]')].filter(e => e.offsetWidth > 0);
       el = cmds.find(e => norm(e.innerText).toLowerCase() === target);
+      if (!el) el = cmds.find(e => norm(e.innerText).toLowerCase().startsWith(target));
       if (!el) el = cmds.find(e => norm(e.innerText).toLowerCase().includes(target));
       if (el) return el.id;
       return null;
