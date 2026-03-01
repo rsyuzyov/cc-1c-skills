@@ -1022,6 +1022,7 @@ export async function fillFields(fields) {
           div.style.cssText = 'position:fixed;pointer-events:none;z-index:999998;top:' + (r.y-4) + 'px;left:' + (r.x-4) + 'px;width:' + (r.width+8) + 'px;height:' + (r.height+8) + 'px;outline:3px solid #e74c3c;border-radius:4px;box-shadow:0 0 16px #e74c3c80';
         }, { id: r.inputId });
         await page.waitForTimeout(500);
+        await unhighlight();
       } catch {}
     }
     try {
