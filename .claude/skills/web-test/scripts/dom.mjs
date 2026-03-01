@@ -300,7 +300,7 @@ export function readSectionsScript() {
 /** Read open tabs bar. */
 export function readTabsScript() {
   return `(() => {
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
     const tabs = [];
     document.querySelectorAll('[id^="openedCell_cmd_"]').forEach(el => {
       const text = norm(el.innerText);
@@ -316,8 +316,8 @@ export function readTabsScript() {
 /** Switch to a tab by name (fuzzy match). Returns matched name or { error, available }. */
 export function switchTabScript(name) {
   return `(() => {
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
-    const target = ${JSON.stringify(name.toLowerCase())};
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+    const target = ${JSON.stringify(name.toLowerCase().replace(/ё/g, 'е'))};
     const tabs = [...document.querySelectorAll('[id^="openedCell_cmd_"]')].filter(el => el.offsetWidth > 0 && norm(el.innerText));
     let best = tabs.find(el => norm(el.innerText).toLowerCase() === target);
     if (!best) best = tabs.find(el => norm(el.innerText).toLowerCase().includes(target));
@@ -476,8 +476,8 @@ export function getFormStateScript() {
  */
 export function navigateSectionScript(name) {
   return `(() => {
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
-    const target = ${JSON.stringify(name.toLowerCase())};
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+    const target = ${JSON.stringify(name.toLowerCase().replace(/ё/g, 'е'))};
     const els = [...document.querySelectorAll('[id^="themesCell_theme_"]')];
     let bestEl = els.find(el => norm(el.innerText).toLowerCase() === target);
     if (!bestEl) bestEl = els.find(el => norm(el.innerText).toLowerCase().includes(target));
@@ -491,8 +491,8 @@ export function navigateSectionScript(name) {
  */
 export function openCommandScript(name) {
   return `(() => {
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
-    const target = ${JSON.stringify(name.toLowerCase())};
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+    const target = ${JSON.stringify(name.toLowerCase().replace(/ё/g, 'е'))};
     const els = [...document.querySelectorAll('[id^="cmd_"][id$="_txt"]')].filter(el => el.offsetWidth > 0);
     let bestEl = els.find(el => norm(el.innerText).toLowerCase() === target);
     if (!bestEl) bestEl = els.find(el => norm(el.innerText).toLowerCase().includes(target));
@@ -510,8 +510,8 @@ export function openCommandScript(name) {
 export function findClickTargetScript(formNum, text) {
   const p = `form${formNum}_`;
   return `(() => {
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
-    const target = ${JSON.stringify(text.toLowerCase())};
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
+    const target = ${JSON.stringify(text.toLowerCase().replace(/ё/g, 'е'))};
     const p = ${JSON.stringify(p)};
     const items = [];
 
@@ -613,7 +613,7 @@ export function findFieldButtonScript(formNum, fieldName, buttonSuffix = 'DLB') 
   const p = `form${formNum}_`;
   return `(() => {
     const p = ${JSON.stringify(p)};
-    const target = ${JSON.stringify(fieldName.toLowerCase())};
+    const target = ${JSON.stringify(fieldName.toLowerCase().replace(/ё/g, 'е'))};
     const suffix = ${JSON.stringify(buttonSuffix)};
     const allFields = [];
     document.querySelectorAll('input.editInput[id^="' + p + '"], textarea[id^="' + p + '"]').forEach(el => {
@@ -682,7 +682,7 @@ export function findFieldButtonScript(formNum, fieldName, buttonSuffix = 'DLB') 
 export function readSubmenuScript() {
   return `(() => {
     const items = [];
-    const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
+    const norm = s => (s?.trim().replace(/\\u00a0/g, ' ') || '').replace(/ё/gi, 'е');
 
     // 1. DLB dropdown (#editDropDown with .eddText items)
     const edd = document.getElementById('editDropDown');
@@ -786,7 +786,7 @@ export function readSubmenuScript() {
  */
 export function clickPopupItemScript(text) {
   return `(() => {
-    const target = ${JSON.stringify(text.toLowerCase())};
+    const target = ${JSON.stringify(text.toLowerCase().replace(/ё/g, 'е'))};
     // 1. DLB dropdown (#editDropDown .eddText items)
     const edd = document.getElementById('editDropDown');
     if (edd && edd.offsetWidth > 0) {

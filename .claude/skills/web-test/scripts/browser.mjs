@@ -29,6 +29,9 @@ let recorder = null; // { cdp, ffmpeg, startTime, outputPath }
 const LOAD_TIMEOUT = 60000;
 const INIT_TIMEOUT = 60000;
 const ACTION_WAIT = 2000;   // fallback minimum wait
+
+/** Normalize ё→е for fuzzy matching (Russian letter yo vs ye). */
+const normYo = s => s.replace(/ё/gi, 'е');
 const MAX_WAIT = 10000;     // max wait for stability
 const POLL_INTERVAL = 200;  // polling interval
 const STABLE_CYCLES = 3;    // consecutive stable cycles needed
@@ -312,7 +315,7 @@ export async function navigateSection(name) {
   ensureConnected();
   await dismissPendingErrors();
   const result = await page.evaluate(navigateSectionScript(name));
-  if (result?.error) return result;
+  if (result?.error) throw new Error(`navigateSection: "${name}" not found. Available: ${result.available?.join(', ') || 'none'}`);
 
   await waitForStable();
   const { sections, commands } = await page.evaluate(`({
@@ -334,7 +337,7 @@ export async function openCommand(name) {
   await dismissPendingErrors();
   const formBefore = await page.evaluate(detectFormScript());
   const result = await page.evaluate(openCommandScript(name));
-  if (result?.error) return result;
+  if (result?.error) throw new Error(`openCommand: "${name}" not found. Available: ${result.available?.join(', ') || 'none'}`);
 
   await waitForStable(formBefore);
   const state = await getFormState();
@@ -347,7 +350,7 @@ export async function openCommand(name) {
 export async function switchTab(name) {
   ensureConnected();
   const result = await page.evaluate(switchTabScript(name));
-  if (result?.error) return result;
+  if (result?.error) throw new Error(`switchTab: "${name}" not found. Available: ${result.available?.join(', ') || 'none'}`);
   await waitForStable();
   return await getFormState();
 }
@@ -439,7 +442,7 @@ export async function getFormState() {
 export async function readTable({ maxRows = 20, offset = 0 } = {}) {
   ensureConnected();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('readTable: no form found');
   return await page.evaluate(readTableScript(formNum, { maxRows, offset }));
 }
 
@@ -504,7 +507,7 @@ export async function readSpreadsheet() {
     } catch { /* skip inaccessible frames */ }
   }
 
-  if (allCells.size === 0) return { error: 'no_spreadsheet', hint: 'No SpreadsheetDocument found. Report may not be generated yet.' };
+  if (allCells.size === 0) throw new Error('readSpreadsheet: no SpreadsheetDocument found. Report may not be generated yet.');
 
   // Group by row, determine max columns
   const rowMap = new Map();
@@ -688,19 +691,20 @@ async function pickFromSelectionForm(selFormNum, fieldName, text, origFormNum) {
     if (!body) return null;
     const lines = [...body.querySelectorAll('.gridLine')];
     if (!lines.length) return { rowCount: 0 };
-    const target = ${JSON.stringify(text.toLowerCase())};
+    const target = ${JSON.stringify(text.toLowerCase().replace(/ё/g, 'е'))};
+    const ny = s => s.replace(/ё/gi, 'е');
 
     // Score each row: exact cell match > row includes > partial cell match
     let bestLine = null, bestScore = 0;
     for (const line of lines) {
       const boxes = [...line.querySelectorAll('.gridBoxText')].map(b => b.innerText?.trim() || '');
-      const rowText = boxes.join(' ').toLowerCase();
+      const rowText = ny(boxes.join(' ').toLowerCase());
       let score = 0;
-      if (boxes.some(b => b.toLowerCase() === target)) score = 3;           // exact cell match
-      else if (rowText === target) score = 3;                                // exact row match
-      else if (boxes.some(b => b.toLowerCase().includes(target))) score = 2; // cell includes target
-      else if (rowText.includes(target)) score = 2;                          // row includes target
-      else if (target.includes(boxes[0]?.toLowerCase())) score = 1;          // target includes first cell
+      if (boxes.some(b => ny(b.toLowerCase()) === target)) score = 3;           // exact cell match
+      else if (rowText === target) score = 3;                                    // exact row match
+      else if (boxes.some(b => ny(b.toLowerCase()).includes(target))) score = 2; // cell includes target
+      else if (rowText.includes(target)) score = 2;                              // row includes target
+      else if (target.includes(ny(boxes[0]?.toLowerCase()))) score = 1;          // target includes first cell
       if (score > bestScore) { bestScore = score; bestLine = line; }
     }
 
@@ -873,19 +877,19 @@ async function fillReferenceField(selector, fieldName, value, formNum) {
   })()`);
 
   if (eddState.visible && eddState.items?.length > 0) {
-    const target = text.toLowerCase();
+    const target = normYo(text.toLowerCase());
     // Separate real matches from "Создать:" items
     const candidates = eddState.items.filter(i => !i.name.startsWith('Создать'));
 
     if (candidates.length > 0) {
       // Find best match (items have format "Name (Code)" — match against name part)
       let match = candidates.find(i => {
-        const name = i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();
+        const name = normYo(i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase());
         return name === target;
       });
-      if (!match) match = candidates.find(i => i.name.toLowerCase().includes(target));
+      if (!match) match = candidates.find(i => normYo(i.name.toLowerCase()).includes(target));
       if (!match) match = candidates.find(i => {
-        const name = i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();
+        const name = normYo(i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase());
         return name.includes(target) || target.includes(name);
       });
 
@@ -992,7 +996,7 @@ export async function fillFields(fields) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('fillFields: no form found');
 
   // Resolve field names to element IDs
   const resolved = await page.evaluate(resolveFieldsScript(formNum, fields));
@@ -1021,9 +1025,9 @@ export async function fillFields(fields) {
         results.push({ field: r.field, ok: true, value: String(wantChecked), method: 'toggle' });
       } else if (r.isRadio) {
         // Radio button: find option by label (fuzzy match) and click it
-        const desired = String(fields[r.field]).toLowerCase();
-        const opt = r.options.find(o => o.label.toLowerCase() === desired)
-          || r.options.find(o => o.label.toLowerCase().includes(desired));
+        const desired = normYo(String(fields[r.field]).toLowerCase());
+        const opt = r.options.find(o => normYo(o.label.toLowerCase()) === desired)
+          || r.options.find(o => normYo(o.label.toLowerCase()).includes(desired));
         if (opt) {
           // Option 0 = base element (no suffix), options 1+ = #N#radio
           const radioId = opt.index === 0 ? r.inputId : `${r.inputId}#${opt.index}#radio`;
@@ -1057,6 +1061,11 @@ export async function fillFields(fields) {
   }
 
   const formData = await page.evaluate(readFormScript(formNum));
+  const failed = results.filter(r => r.error);
+  if (failed.length > 0) {
+    const details = failed.map(f => `  ${f.field}: ${f.error}${f.available ? ' (available: ' + f.available.join(', ') + ')' : ''}`).join('\n');
+    throw new Error(`fillFields: ${failed.length} of ${results.length} field(s) failed:\n${details}`);
+  }
   return { filled: results, form: formData };
 }
 
@@ -1070,17 +1079,18 @@ export async function clickElement(text, { dblclick } = {}) {
   if (pending?.confirmation) {
     const btnResult = await page.evaluate(`(() => {
       const norm = s => s?.trim().replace(/\\u00a0/g, ' ') || '';
-      const target = ${JSON.stringify(text.toLowerCase())};
+      const ny = s => s.replace(/ё/gi, 'е');
+      const target = ny(${JSON.stringify(text.toLowerCase())});
       const btns = [...document.querySelectorAll('a.press.pressButton')].filter(el => el.offsetWidth > 0);
-      let best = btns.find(el => norm(el.innerText).toLowerCase() === target);
-      if (!best) best = btns.find(el => norm(el.innerText).toLowerCase().includes(target));
+      let best = btns.find(el => ny(norm(el.innerText).toLowerCase()) === target);
+      if (!best) best = btns.find(el => ny(norm(el.innerText).toLowerCase()).includes(target));
       if (best) {
         const r = best.getBoundingClientRect();
         return { name: norm(best.innerText), x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
       }
       return { error: 'not_found', available: btns.map(el => norm(el.innerText)).filter(Boolean) };
     })()`);
-    if (btnResult?.error) return btnResult;
+    if (btnResult?.error) throw new Error(`clickElement: "${text}" not found among confirmation buttons. Available: ${btnResult.available?.join(', ') || 'none'}`);
     await page.mouse.click(btnResult.x, btnResult.y);
     await waitForStable();
     const state = await getFormState();
@@ -1091,9 +1101,9 @@ export async function clickElement(text, { dblclick } = {}) {
   // Check if there's an open popup — if so, try to click inside it
   const popupItems = await page.evaluate(readSubmenuScript());
   if (Array.isArray(popupItems) && popupItems.length > 0) {
-    const target = text.toLowerCase();
-    let found = popupItems.find(i => i.name.toLowerCase() === target);
-    if (!found) found = popupItems.find(i => i.name.toLowerCase().includes(target));
+    const target = normYo(text.toLowerCase());
+    let found = popupItems.find(i => normYo(i.name.toLowerCase()) === target);
+    if (!found) found = popupItems.find(i => normYo(i.name.toLowerCase()).includes(target));
     if (found) {
       // submenuArrow items (group headers like "Создать", "Печать") — hover to expand nested submenu
       if (found.kind === 'submenuArrow') {
@@ -1136,11 +1146,11 @@ export async function clickElement(text, { dblclick } = {}) {
   }
 
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error(`clickElement: no form found`);
 
   // Find the target element ID
   const target = await page.evaluate(findClickTargetScript(formNum, text));
-  if (target?.error) return target;
+  if (target?.error) throw new Error(`clickElement: "${text}" not found. Available: ${target.available?.join(', ') || 'none'}`);
 
   // Grid row targets — use coordinate click (single or double)
   if (target.kind === 'gridGroup' || target.kind === 'gridParent') {
@@ -1162,7 +1172,7 @@ export async function clickElement(text, { dblclick } = {}) {
       for (const line of lines) {
         const textBoxes = [...line.querySelectorAll('.gridBoxText')].filter(b => b.offsetWidth > 0);
         const text = textBoxes[0]?.innerText?.trim() || '';
-        if (text.toLowerCase() === ${JSON.stringify(target.name.toLowerCase())}) {
+        if (text.toLowerCase().replace(/ё/gi, 'е') === ${JSON.stringify(target.name.toLowerCase().replace(/ё/gi, 'е'))}) {
           const treeIcon = line.querySelector('.gridBoxImg [tree="true"]');
           if (treeIcon) {
             const r = treeIcon.getBoundingClientRect();
@@ -1333,7 +1343,7 @@ export async function selectValue(fieldName, searchText) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error(`selectValue: no form found`);
 
   // 1. Find DLB button (fallback to CB — ERP uses Choose Button instead of DLB for some fields)
   let btn = await page.evaluate(findFieldButtonScript(formNum, fieldName, 'DLB'));
@@ -1388,11 +1398,12 @@ export async function selectValue(fieldName, searchText) {
     return page.evaluate(`(() => {
       const edd = document.getElementById('editDropDown');
       if (!edd || edd.offsetWidth === 0) return null;
-      const target = ${JSON.stringify(itemName.toLowerCase())};
+      const ny = s => s.replace(/ё/gi, 'е');
+      const target = ny(${JSON.stringify(itemName.toLowerCase())});
       // Search .eddText items
       for (const el of edd.querySelectorAll('.eddText')) {
         if (el.offsetWidth === 0) continue;
-        const t = (el.innerText?.trim() || '').toLowerCase();
+        const t = ny((el.innerText?.trim() || '').toLowerCase());
         if (t === target || t.includes(target) || target.includes(t.replace(/\\s*\\([^)]*\\)\\s*$/, ''))) {
           const r = el.getBoundingClientRect();
           const opts = { bubbles: true, cancelable: true, clientX: r.x + r.width/2, clientY: r.y + r.height/2 };
@@ -1430,8 +1441,23 @@ export async function selectValue(fieldName, searchText) {
     })()`);
   }
 
-  // 2. Click DLB
-  await page.click(`[id="${btn.buttonId}"]`);
+  // 2. Click DLB (handle funcPanel / surface overlay intercept)
+  const dlbSel = `[id="${btn.buttonId}"]`;
+  try {
+    await page.click(dlbSel, { timeout: 5000 });
+  } catch (dlbErr) {
+    if (dlbErr.message.includes('intercepts pointer events')) {
+      try {
+        await page.click(dlbSel, { force: true, timeout: 5000 });
+      } catch (dlbErr2) {
+        if (dlbErr2.message.includes('intercepts pointer events')) {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+          await page.click(dlbSel, { timeout: 5000 });
+        } else throw dlbErr2;
+      }
+    } else throw dlbErr;
+  }
   await page.waitForTimeout(ACTION_WAIT);
 
   // 3A. Check if a dropdown popup appeared (inline quick selection)
@@ -1441,12 +1467,12 @@ export async function selectValue(fieldName, searchText) {
     const showAllItem = popupItems.find(i => i.kind === 'showAll');
 
     if (searchText) {
-      const target = searchText.toLowerCase();
+      const target = normYo(searchText.toLowerCase());
       // Try to find match among regular dropdown items
-      let match = regularItems.find(i => i.name.toLowerCase() === target);
-      if (!match) match = regularItems.find(i => i.name.toLowerCase().includes(target));
+      let match = regularItems.find(i => normYo(i.name.toLowerCase()) === target);
+      if (!match) match = regularItems.find(i => normYo(i.name.toLowerCase()).includes(target));
       if (!match) match = regularItems.find(i => {
-        const name = i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase();
+        const name = normYo(i.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase());
         return name === target || name.includes(target) || target.includes(name);
       });
 
@@ -1490,9 +1516,7 @@ export async function selectValue(fieldName, searchText) {
       if (formResult) return formResult;
 
       // Still nothing — report available items from original dropdown
-      return { error: 'not_found', field: btn.fieldName, search: searchText,
-        available: regularItems.map(i => i.name),
-        message: 'No match in dropdown, could not open selection form' };
+      throw new Error(`selectValue: "${searchText}" not found for field "${btn.fieldName}". Available: ${regularItems.map(i => i.name).join(', ') || 'none'}`);
     }
 
     // No search text — click first regular item
@@ -1540,8 +1564,7 @@ export async function selectValue(fieldName, searchText) {
   const formResult = await openFormAndPick();
   if (formResult) return formResult;
 
-  return { error: 'selection_not_detected', field: btn.fieldName,
-           message: 'DLB click did not open a popup or selection form' };
+  throw new Error(`selectValue: DLB click for "${btn.fieldName}" did not open a popup or selection form`);
 }
 
 /**
@@ -1562,7 +1585,7 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('fillTableRow: no form found');
 
   try {
   // 1. Switch tab if requested
@@ -1618,7 +1641,7 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
     })()`);
 
-    if (cellCoords.error) return cellCoords;
+    if (cellCoords.error) throw new Error(`fillTableRow: ${cellCoords.error}${cellCoords.total ? ' (total rows: ' + cellCoords.total + ')' : ''}`);
 
     await page.mouse.dblclick(cellCoords.x, cellCoords.y);
     await page.waitForTimeout(500);
@@ -1627,8 +1650,7 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
       const f = document.activeElement;
       return f && f.tagName === 'INPUT';
     })()`);
-    if (!inEdit) return { error: 'edit_mode_failed',
-      message: 'Double-click on row ' + row + ' did not enter edit mode' };
+    if (!inEdit) throw new Error(`fillTableRow: double-click on row ${row} did not enter edit mode`);
   }
 
   // 3. Verify we're in grid edit mode (active INPUT inside a .grid)
@@ -1644,8 +1666,7 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
   })()`);
 
   if (!editCheck.inEdit) {
-    return { error: 'not_in_edit_mode',
-      message: 'Not in grid edit mode. Use add:true or click a cell first.' };
+    throw new Error('fillTableRow: not in grid edit mode. Use add:true or click a cell first.');
   }
 
   // 4. Prepare pending fields for fuzzy matching
@@ -1740,10 +1761,10 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
       const realItems = eddItems.filter(i => !i.startsWith('Создать'));
 
       if (realItems.length > 0) {
-        const tgt = text.toLowerCase();
+        const tgt = normYo(text.toLowerCase());
         let pick = realItems.find(i =>
-          i.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase() === tgt);
-        if (!pick) pick = realItems.find(i => i.toLowerCase().includes(tgt));
+          normYo(i.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase()) === tgt);
+        if (!pick) pick = realItems.find(i => normYo(i.toLowerCase()).includes(tgt));
         if (!pick) pick = realItems[0];
 
         // Click EDD item via dispatchEvent (bypasses div.surface overlay)
@@ -1928,8 +1949,8 @@ export async function fillTableRow(fields, { tab, add, row } = {}) {
   return result;
 
   } catch (e) {
-    const form = await getFormState().catch(() => null);
-    return { error: 'fillTableRow_failed', message: e.message, form };
+    if (e.message.startsWith('fillTableRow:')) throw e;
+    throw new Error(`fillTableRow: ${e.message}`);
   }
 }
 
@@ -1946,7 +1967,7 @@ export async function deleteTableRow(row, { tab } = {}) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('deleteTableRow: no form found');
 
   // 1. Switch tab if requested
   if (tab) {
@@ -1971,7 +1992,7 @@ export async function deleteTableRow(row, { tab } = {}) {
     return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), total: rows.length };
   })()`);
 
-  if (cellCoords.error) return cellCoords;
+  if (cellCoords.error) throw new Error(`deleteTableRow: ${cellCoords.error}${cellCoords.total ? ' (total rows: ' + cellCoords.total + ')' : ''}`);
 
   const rowsBefore = cellCoords.total;
 
@@ -2014,7 +2035,7 @@ export async function filterList(text, { field, exact } = {}) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('filterList: no form found');
 
   if (!field) {
     // --- Simple search: fill search input + Enter ---
@@ -2024,7 +2045,7 @@ export async function filterList(text, { field, exact } = {}) {
         .find(el => el.offsetWidth > 0 && /Строк[аи]Поиска|SearchString/i.test(el.id));
       return el ? el.id : null;
     })()`);
-    if (!searchId) return { error: 'no_search_field', message: 'No search input found on this form' };
+    if (!searchId) throw new Error('filterList: no search input found on this form');
 
     await page.click(`[id="${searchId}"]`);
     await page.waitForTimeout(200);
@@ -2062,7 +2083,8 @@ export async function filterList(text, { field, exact } = {}) {
     for (let i = 0; i < headers.length; i++) {
       const t = headers[i].innerText?.trim().replace(/\\u00a0/g, ' ');
       if (!t) continue;
-      const tl = t.toLowerCase(), fl = targetField.toLowerCase();
+      const ny = s => s.replace(/ё/gi, 'е');
+      const tl = ny(t.toLowerCase()), fl = ny(targetField.toLowerCase());
       if (tl === fl) { colIndex = i; break; }
       if (startsWithIdx < 0 && tl.startsWith(fl)) { startsWithIdx = i; }
       else if (includesIdx < 0 && tl.includes(fl)) { includesIdx = i; }
@@ -2082,7 +2104,7 @@ export async function filterList(text, { field, exact } = {}) {
     const r = cells[colIndex].getBoundingClientRect();
     return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
   })()`);
-  if (gridEl.error) return gridEl;
+  if (gridEl.error) throw new Error(`filterList: ${gridEl.error}`);
   needDlb = !!gridEl.needDlb;
   await page.mouse.click(gridEl.x, gridEl.y);
   await page.waitForTimeout(500);
@@ -2101,13 +2123,13 @@ export async function filterList(text, { field, exact } = {}) {
       i.name.replace(/\u00a0/g, ' ').toLowerCase().includes('расширенный поиск'));
     if (!searchItem) {
       await page.keyboard.press('Escape');
-      return { error: 'no_advanced_search', message: 'Advanced search dialog could not be opened' };
+      throw new Error('filterList: advanced search dialog could not be opened');
     }
     await page.mouse.click(searchItem.x, searchItem.y);
     await page.waitForTimeout(2000);
     dialogForm = await page.evaluate(detectFormScript());
     if (dialogForm === formNum) {
-      return { error: 'dialog_not_opened', message: 'Advanced search dialog did not open' };
+      throw new Error('filterList: advanced search dialog did not open');
     }
   }
 
@@ -2125,18 +2147,19 @@ export async function filterList(text, { field, exact } = {}) {
       };
     })()`);
 
-    if (fsInfo.current.toLowerCase() !== field.toLowerCase()) {
+    if (normYo(fsInfo.current.toLowerCase()) !== normYo(field.toLowerCase())) {
       await page.mouse.click(fsInfo.dlbX, fsInfo.dlbY);
       await page.waitForTimeout(1500);
 
       const ddResult = await page.evaluate(`(() => {
         const edd = document.getElementById('editDropDown');
         if (!edd || edd.offsetWidth === 0) return { error: 'no_dropdown' };
-        const target = ${JSON.stringify(field.toLowerCase())};
+        const ny = s => s.replace(/ё/gi, 'е');
+        const target = ny(${JSON.stringify(field.toLowerCase())});
         const items = [...edd.querySelectorAll('div')].filter(el =>
           el.offsetWidth > 0 && el.innerText?.trim() && !el.innerText.includes('\\n'));
-        const match = items.find(el => el.innerText.trim().toLowerCase() === target)
-          || items.find(el => el.innerText.trim().toLowerCase().includes(target));
+        const match = items.find(el => ny(el.innerText.trim().toLowerCase()) === target)
+          || items.find(el => ny(el.innerText.trim().toLowerCase()).includes(target));
         if (!match) return { error: 'field_not_found', available: items.map(el => el.innerText.trim()) };
         const r = match.getBoundingClientRect();
         return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), name: match.innerText.trim() };
@@ -2147,7 +2170,7 @@ export async function filterList(text, { field, exact } = {}) {
         await page.waitForTimeout(500);
         await page.keyboard.press('Escape');
         await page.waitForTimeout(500);
-        return ddResult;
+        throw new Error(`filterList: field "${field}" not found in FieldSelector. Available: ${ddResult.available?.join(', ') || 'none'}`);
       }
       await page.mouse.click(ddResult.x, ddResult.y);
       await page.waitForTimeout(3000);
@@ -2273,18 +2296,19 @@ export async function unfilterList({ field } = {}) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
-  if (formNum === null) return { error: 'no_form' };
+  if (formNum === null) throw new Error('unfilterList: no form found');
 
   if (field) {
     // --- Selective: click × on specific filter badge ---
     const closeBtn = await page.evaluate(`(() => {
       const p = 'form${formNum}_';
       const norm = s => s?.trim().replace(/\\u00a0/g, ' ').replace(/:$/, '').replace(/\\n/g, ' ') || '';
-      const target = ${JSON.stringify(field.toLowerCase())};
+      const ny = s => s.replace(/ё/gi, 'е');
+      const target = ny(${JSON.stringify(field.toLowerCase())});
       const items = [...document.querySelectorAll('[id^="' + p + '"].trainItem')].filter(el => el.offsetWidth > 0);
       for (const item of items) {
         const titleEl = item.querySelector('.trainName');
-        const title = norm(titleEl?.innerText).toLowerCase();
+        const title = ny(norm(titleEl?.innerText).toLowerCase());
         if (title === target || title.includes(target)) {
           const close = item.querySelector('.trainClose');
           if (close) {
@@ -2297,7 +2321,7 @@ export async function unfilterList({ field } = {}) {
       return { error: 'not_found', available };
     })()`);
 
-    if (closeBtn?.error) return closeBtn;
+    if (closeBtn?.error) throw new Error(`unfilterList: filter badge "${field}" not found. Available: ${closeBtn.available?.join(', ') || 'none'}`);
     await page.mouse.click(closeBtn.x, closeBtn.y);
     await waitForStable(formNum);
 
