@@ -296,6 +296,7 @@ await closeForm({ save: false });
 
 ## Связанные навыки
 
+- [Запись видеоинструкций](web-test-recording-guide.md) — запись видео, субтитры, подсветка, TTS-озвучка
 - [Веб-публикация](web-guide.md) — `/web-publish`, `/web-info`, `/web-stop`, `/web-unpublish`
 - [Базы данных](db-guide.md) — `/db-load-xml`, `/db-update`, `/db-run`
 - [Расширения](cfe-guide.md) — `/cfe-init`, `/cfe-borrow`, `/cfe-patch-method`

@@ -33,28 +33,11 @@
 8. **Проверка** — обновить страницу в браузере
 9. **Завершение** — `/web-stop` остановить Apache
 
-## Конфигурация `webPath` в `.v8-project.json`
+## Конфигурация в `.v8-project.json`
 
 Поле `webPath` указывает путь к каталогу Apache. Если не задано, используется `tools/apache24` от корня проекта.
 
-```json
-{
-  "v8path": "C:\\Program Files\\1cv8\\8.3.24.1691\\bin",
-  "webPath": "C:\\tools\\apache24",
-  "databases": [
-    {
-      "id": "dev",
-      "name": "Разработка",
-      "type": "file",
-      "path": "C:\\Bases\\MyApp_Dev",
-      "user": "Admin"
-    }
-  ],
-  "default": "dev"
-}
-```
-
-> `webPath` — опционально. Если не задан, все навыки `/web-*` ищут Apache в `tools/apache24`.
+Полное описание формата — в [справочнике .v8-project.json](v8-project-guide.md).
 
 ## Сценарии использования
 

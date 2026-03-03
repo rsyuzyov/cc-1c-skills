@@ -288,9 +288,12 @@ Clear filters. Without arguments clears all, with `{ field }` clears specific ba
 #### `isRecording()` → boolean
 #### `setHighlight(on)` / `isHighlightMode()` → auto-highlight mode for video
 #### `highlight(text)` / `unhighlight()` → manual element highlighting
+#### `addNarration(videoPath, opts?)` → narrated MP4 with TTS voiceover
+#### `getCaptions()` → caption timestamps from last recording
 
-See [recording.md](recording.md) for setup (ffmpeg), highlight mode, API details, and examples.
+See [recording.md](recording.md) for setup (ffmpeg), highlight mode, TTS narration, API details, and examples.
 If `.v8-project.json` has `ffmpegPath`, pass it to `startRecording({ ffmpegPath })`.
+If `.v8-project.json` has `tts` config, pass it to `addNarration()` (provider, voice, apiKey).
 
 ## Common patterns
 

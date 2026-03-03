@@ -204,11 +204,20 @@ async function cmdExec(fileOrDash) {
     : readFileSync(resolve(fileOrDash), 'utf-8');
 
   const sess = loadSession();
-  const resp = await fetch(`http://127.0.0.1:${sess.port}/exec`, {
-    method: 'POST',
-    body: code
+  const result = await new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1', port: sess.port, path: '/exec',
+      method: 'POST', timeout: 10 * 60 * 1000,
+    }, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { reject(new Error(data)); } });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('Exec timeout (10 min)')); });
+    req.write(code);
+    req.end();
   });
-  const result = await resp.json();
   out(result);
   if (!result.ok) process.exit(1);
 }

@@ -62,15 +62,16 @@ Start recording the browser viewport to an MP4 file.
 - Throws if already recording or browser not connected
 - Recording auto-stops when `disconnect()` is called
 
-### `stopRecording()` → `{ file, duration, size }`
+### `stopRecording()` → `{ file, duration, size, captions }`
 
-Stop recording and finalize the MP4 file.
+Stop recording and finalize the MP4 file. Saves `.captions.json` next to the video if captions were collected.
 
 | Return field | Type | Description |
 |-------------|------|-------------|
 | `file` | string | Absolute path to the MP4 file |
 | `duration` | number | Recording duration in seconds |
 | `size` | number | File size in bytes |
+| `captions` | number | Number of captions collected during recording |
 
 ### `isRecording()` → boolean
 
@@ -184,6 +185,109 @@ console.log(`Recorded ${result.duration}s, ${(result.size / 1024 / 1024).toFixed
 
 **Highlight timing**: `setHighlight(true)` enables auto-mode — each action function highlights the target for 500ms, then removes the highlight before performing the action. No manual `highlight()`/`unhighlight()` calls needed. Enable after title slide, disable before `stopRecording()`.
 
+## TTS Narration
+
+Add voiceover to recorded videos. Captions shown via `showCaption()` are automatically collected during recording and can be synthesized into speech.
+
+### Prerequisites
+
+- **ffmpeg** — same as for video recording (ffprobe must be next to ffmpeg)
+- **node-edge-tts** — `npm install --prefix tools/tts node-edge-tts` (for Edge TTS provider, free, no API key). Also works if installed globally or at project level — the resolver tries multiple locations automatically
+
+### Configuration in `.v8-project.json`
+
+```json
+{
+  "tts": {
+    "provider": "edge",
+    "voice": "ru-RU-DmitryNeural"
+  }
+}
+```
+
+For OpenAI-compatible provider:
+```json
+{
+  "tts": {
+    "provider": "openai",
+    "apiKey": "sk-...",
+    "voice": "alloy"
+  }
+}
+```
+
+For ElevenLabs:
+```json
+{
+  "tts": {
+    "provider": "elevenlabs",
+    "apiKey": "sk_...",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  }
+}
+```
+Note: `voice` is the ElevenLabs voice ID (not a name). Default model: `eleven_multilingual_v2` (supports Russian and other languages).
+
+### `showCaption()` speech parameter
+
+The `speech` option controls what text is narrated (vs displayed):
+
+```js
+await showCaption('Дт 60.02 — Кт 51');                           // narrates the displayed text
+await showCaption('Дт 60.02 — Кт 51', { speech: 'Проводка: дебет шестьдесят ноль два, кредит пятьдесят один' }); // custom narration
+await showCaption('Техническая информация', { speech: false });   // no narration for this caption
+```
+
+### `addNarration(videoPath, opts?)`
+
+Generate TTS and merge audio with video. Call after `stopRecording()`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `videoPath` | `string` | Path to the recorded MP4 file |
+| `opts.captions` | `Array` | Explicit captions (default: from last recording or `.captions.json`) |
+| `opts.provider` | `string` | `'edge'` (default), `'openai'`, or `'elevenlabs'` |
+| `opts.voice` | `string` | Voice name (provider-specific) |
+| `opts.apiKey` | `string` | API key (for openai) |
+| `opts.apiUrl` | `string` | Endpoint (for openai) |
+| `opts.model` | `string` | Model (for openai, default: `tts-1`) |
+| `opts.ffmpegPath` | `string` | Path to ffmpeg binary |
+| `opts.outputPath` | `string` | Output file (default: `video-narrated.mp4`) |
+
+**Returns:** `{ file, duration, size, captions, warnings? }`
+
+### `getCaptions()`
+
+Returns captions from the current or last recording: `Array<{ text, speech, time }>`.
+
+### Example: Record and narrate
+
+```js
+await startRecording('recordings/demo.mp4');
+await showCaption('Переходим в раздел Банк и касса');
+await wait(1.5);
+await navigateSection('Банк и касса');
+await showCaption('Открываем банковские выписки');
+await wait(1.5);
+await openCommand('Банковские выписки');
+await hideCaption();
+const video = await stopRecording();
+
+// Add narration (reads tts config from .v8-project.json)
+const narrated = await addNarration(video.file, { voice: 'ru-RU-DmitryNeural' });
+console.log(`Narrated: ${narrated.file}, ${narrated.duration}s`);
+```
+
+### Re-narration
+
+After recording, a `.captions.json` file is saved next to the video. You can re-narrate with a different voice without re-recording:
+
+```js
+const result = await addNarration('recordings/demo.mp4', { voice: 'ru-RU-SvetlanaNeural' });
+```
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -193,3 +297,6 @@ console.log(`Recorded ${result.duration}s, ${(result.size / 1024 / 1024).toFixed
 | Video is choppy | Add `wait()` between steps. Reduce `quality` for faster capture |
 | "Already recording" | Call `stopRecording()` before starting a new recording |
 | Recording stops on disconnect | Expected — auto-stop prevents orphaned ffmpeg processes |
+| "No captions available" | Use `showCaption()` during recording, or pass `opts.captions` |
+| TTS timeout | Check internet connection. Edge TTS requires network access |
+| Audio cuts off between captions | TTS is auto-trimmed to fit the timeline. Add longer `wait()` pauses |
