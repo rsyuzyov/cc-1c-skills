@@ -236,7 +236,7 @@ await closeForm({ save: false });
 |---------|----------|------------|
 | `clickElement(text, {dblclick?})` | Клик по кнопке/ссылке/строке. `{dblclick: true}` для открытия из списка | form state или `{ submenu }` |
 | `fillFields({name: value})` | Заполнить поля (текст, чекбокс, радио, ссылки, DCS-фильтры) | `{ filled: [{field, ok, method}], form }` |
-| `selectValue(field, search)` | Выбрать из справочника (dropdown или форма подбора) | form state с `selected` |
+| `selectValue(field, search, opts?)` | Выбрать из справочника. `{ type }` для полей составного типа | form state с `selected` |
 | `fillTableRow(fields, {tab?, add?, row?})` | Заполнить строку таблицы. `add: true` = новая, `row: N` = редактирование | form state |
 | `deleteTableRow(row, {tab?})` | Удалить строку по индексу | form state |
 | `closeForm({save?})` | Закрыть форму. `save: false` = "Нет", `save: true` = "Да" | form state |

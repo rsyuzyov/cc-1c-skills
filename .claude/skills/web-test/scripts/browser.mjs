@@ -873,6 +873,119 @@ async function pickFromSelectionForm(selFormNum, fieldName, text, origFormNum) {
 }
 
 /**
+ * Detect whether a form is a type selection dialog ("Выбор типа данных").
+ * Type dialogs appear when selecting a value for a composite-type field.
+ *
+ * Detection signals (any one is sufficient):
+ * - form{N}_OK element exists (selection forms use "Выбрать", not "OK")
+ * - form{N}_ValueList grid exists (specific to type/value list dialogs)
+ * - Window title contains "Выбор типа" (title attr on .toplineBoxTitle)
+ */
+async function isTypeDialog(formNum) {
+  return page.evaluate(`(() => {
+    const p = 'form' + ${formNum} + '_';
+    const hasOK = !!document.getElementById(p + 'OK');
+    const hasValueList = !!document.getElementById(p + 'ValueList');
+    const hasTitle = [...document.querySelectorAll('.toplineBoxTitle')]
+      .some(el => el.offsetWidth > 0 && /выбор типа/i.test(el.getAttribute('title') || ''));
+    return hasOK || hasValueList || hasTitle;
+  })()`);
+}
+
+/**
+ * Select a type from the type selection dialog ("Выбор типа данных")
+ * using Ctrl+F search. The dialog has a virtual grid (~5 visible rows),
+ * so Ctrl+F is the only reliable way to find a type.
+ *
+ * Algorithm: Ctrl+F → paste typeName → Enter (search) → Escape (close Find) →
+ * verify selected row matches → Enter (OK)
+ *
+ * @param {number} formNum - type dialog form number
+ * @param {string} typeName - type name to search for (fuzzy, e.g. "Реализация (акт")
+ * @throws {Error} if type not found
+ */
+async function pickFromTypeDialog(formNum, typeName) {
+  // The type dialog is a modal ValueList grid. Uses Ctrl+F "Найти" (Find) dialog
+  // to search in the virtual grid (only ~5 rows visible, scrolling unreliable).
+  //
+  // Key constraints discovered during testing:
+  // - Grid focus: use evaluate(() => gridBody.focus()), NOT page.click({force:true})
+  //   which punches through the modal overlay to the form underneath
+  // - Ctrl+F only opens "Найти" if the GRID is focused (otherwise closes the type dialog)
+  // - Buttons: use page.click({force:true}), NOT evaluate(() => el.click())
+  //   because evaluate click doesn't trigger 1C's event chain properly
+  // - Enter/Escape in "Найти" close the ENTIRE dialog chain, not just "Найти"
+  // - Closing "Найти" via Cancel resets the search — verify grid while "Найти" is open
+
+  // 1. Focus the grid via evaluate (does NOT punch through modal like page.click)
+  await page.evaluate(`(() => {
+    const grid = document.getElementById('form${formNum}_ValueList');
+    if (!grid) return;
+    const body = grid.querySelector('.gridBody');
+    if (body) body.focus(); else grid.focus();
+  })()`);
+  await page.waitForTimeout(500);
+
+  // 2. Ctrl+F to open "Найти" dialog
+  await page.keyboard.press('Control+f');
+  await page.waitForTimeout(1000);
+
+  // 3. Paste search text (focus is on "Что искать" field)
+  await page.keyboard.press('Control+a');
+  await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(typeName)})`);
+  await page.keyboard.press('Control+v');
+  await page.waitForTimeout(300);
+
+  // 4. Find the "Найти" dialog form number (it's > formNum)
+  const findFormNum = await page.evaluate(`(() => {
+    for (let n = ${formNum} + 1; n < ${formNum} + 20; n++) {
+      const btn = document.getElementById('form' + n + '_Find');
+      if (btn && btn.offsetWidth > 0) return n;
+    }
+    return null;
+  })()`);
+
+  if (findFormNum === null) {
+    await page.keyboard.press('Escape');
+    await waitForStable();
+    throw new Error('selectValue: Ctrl+F did not open "Найти" dialog in type selection');
+  }
+
+  // 5. Click "Найти" via page.click({force:true}) — evaluate click doesn't trigger 1C events
+  await page.click(`#form${findFormNum}_Find`, { force: true });
+  await page.waitForTimeout(3000);
+
+  // 6. Verify grid WHILE "Найти" is still open (Cancel resets the search)
+  const gridCheck = await page.evaluate(`(() => {
+    const grid = document.getElementById('form${formNum}_ValueList');
+    if (!grid) return { visible: [] };
+    const body = grid.querySelector('.gridBody');
+    if (!body) return { visible: [] };
+    const lines = body.querySelectorAll('.gridLine');
+    const visible = [];
+    for (const line of lines) {
+      const text = (line.innerText || '').trim().replace(/\\u00a0/g, ' ');
+      if (text) visible.push(text);
+    }
+    return { visible };
+  })()`);
+
+  const typeNorm = normYo(typeName.toLowerCase());
+  const matchInGrid = gridCheck.visible?.some(t => normYo(t.toLowerCase()).includes(typeNorm));
+  if (!matchInGrid) {
+    // Type not found — close dialogs via Escape (multiple times for safety)
+    for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await page.waitForTimeout(300); }
+    await waitForStable();
+    throw new Error(`selectValue: type "${typeName}" not found in type selection dialog` +
+      `. Visible: ${(gridCheck.visible || []).join(', ')}`);
+  }
+
+  // 7. Click OK on type dialog via page.click({force:true}) — bypasses "Найти" modal
+  await page.click(`#form${formNum}_OK`, { force: true });
+  await page.waitForTimeout(ACTION_WAIT);
+}
+
+/**
  * Fill a reference field via clipboard paste + 1C autocomplete.
  *
  * Strategy:
@@ -1468,7 +1581,7 @@ export async function closeForm({ save } = {}) {
  *   B) DLB opens dropdown with history — click "Показать все" or F4 to open selection form
  *   C) DLB opens a separate selection form directly — search + dblclick in grid
  */
-export async function selectValue(fieldName, searchText) {
+export async function selectValue(fieldName, searchText, { type } = {}) {
   ensureConnected();
   await dismissPendingErrors();
   const formNum = await page.evaluate(detectFormScript());
@@ -1482,6 +1595,70 @@ export async function selectValue(fieldName, searchText) {
   if (btn?.error) return btn;
   if (highlightMode) try { await highlight(fieldName); await page.waitForTimeout(500); await unhighlight(); } catch {}
   try {
+
+  // === COMPOSITE TYPE HANDLING ===
+  // When `type` is specified, clear the field first to reset cached type,
+  // then open type selection dialog, pick the type, then pick the value.
+  if (type) {
+    // Find and focus the field input
+    const inputId = await page.evaluate(`(() => {
+      const p = 'form${formNum}_';
+      const name = ${JSON.stringify(btn.fieldName)};
+      const el = document.querySelector('[id="' + p + name + '"], [id="' + p + name + '_i0"]');
+      return el ? el.id : null;
+    })()`);
+    if (!inputId) throw new Error(`selectValue: field "${btn.fieldName}" input not found`);
+
+    // Clear cached type + value with Shift+F4
+    await page.click(`[id="${inputId}"]`);
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Shift+F4');
+    await page.waitForTimeout(500);
+
+    // Re-focus and press F4 to open type selection dialog
+    await page.click(`[id="${inputId}"]`);
+    await page.waitForTimeout(300);
+    await page.keyboard.press('F4');
+    await page.waitForTimeout(ACTION_WAIT);
+    await waitForStable(formNum);
+
+    const newFormNum = await detectNewForm();
+    if (newFormNum === null) {
+      throw new Error(`selectValue: F4 for composite field "${btn.fieldName}" did not open type selection dialog`);
+    }
+
+    if (await isTypeDialog(newFormNum)) {
+      // Pick type from the dialog
+      await pickFromTypeDialog(newFormNum, type);
+      await waitForStable(newFormNum);
+
+      // After type selection, the actual selection form should open
+      const selFormNum = await detectSelectionForm();
+      if (selFormNum === null) {
+        throw new Error(`selectValue: after selecting type "${type}", no selection form opened for "${btn.fieldName}"`);
+      }
+
+      const pickResult = await pickFromSelectionForm(selFormNum, btn.fieldName, searchText || '', formNum);
+      const state = await getFormState();
+      state.selected = { field: btn.fieldName, search: searchText || null, type, method: 'form' };
+      if (pickResult.error) state.selected.error = pickResult.error;
+      if (pickResult.message) state.selected.message = pickResult.message;
+      const err = await checkForErrors();
+      if (err) state.errors = err;
+      return state;
+    } else {
+      // Not a type dialog — field is not composite type, proceed with normal selection
+      const pickResult = await pickFromSelectionForm(newFormNum, btn.fieldName, searchText || '', formNum);
+      const state = await getFormState();
+      state.selected = { field: btn.fieldName, search: searchText || null, method: 'form' };
+      if (pickResult.error) state.selected.error = pickResult.error;
+      if (pickResult.message) state.selected.message = pickResult.message;
+      const err = await checkForErrors();
+      if (err) state.errors = err;
+      return state;
+    }
+  }
+  // === END COMPOSITE TYPE HANDLING ===
 
   // Auto-enable DCS checkbox if resolved via label
   if (btn.dcsCheckbox) {
@@ -1497,6 +1674,21 @@ export async function selectValue(fieldName, searchText) {
       const forms = {};
       document.querySelectorAll('input.editInput[id], a.press[id]').forEach(el => {
         if (el.offsetWidth === 0) return;
+        const m = el.id.match(/^form(\\d+)_/);
+        if (m) forms[m[1]] = true;
+      });
+      const nums = Object.keys(forms).map(Number).filter(n => n > ${formNum});
+      return nums.length > 0 ? Math.max(...nums) : null;
+    })()`);
+  }
+
+  // Helper: detect any new form (broader than detectSelectionForm — also finds type dialogs
+  // whose a.press buttons have empty IDs). Looks for any visible element with id="form{N}_*".
+  async function detectNewForm() {
+    return page.evaluate(`(() => {
+      const forms = {};
+      document.querySelectorAll('[id]').forEach(el => {
+        if (el.offsetWidth === 0 && el.offsetHeight === 0) return;
         const m = el.id.match(/^form(\\d+)_/);
         if (m) forms[m[1]] = true;
       });
@@ -1662,9 +1854,15 @@ export async function selectValue(fieldName, searchText) {
     }
   }
 
-  // 3B. Check if a new selection form opened directly
-  const selFormNum = await detectSelectionForm();
+  // 3B. Check if a new selection form opened directly (use broad detection to also catch type dialogs)
+  const selFormNum = await detectNewForm();
   if (selFormNum !== null) {
+    // Auto-detect type selection dialog when `type` was not specified
+    if (await isTypeDialog(selFormNum)) {
+      await page.keyboard.press('Escape');
+      await waitForStable();
+      throw new Error(`selectValue: field "${btn.fieldName}" opened a type selection dialog — this is a composite-type field. Specify the type: selectValue('${btn.fieldName}', '${searchText || ''}', { type: 'ИмяТипа' })`);
+    }
     const pickResult = await pickFromSelectionForm(selFormNum, btn.fieldName, searchText || '', formNum);
     const state = await getFormState();
     state.selected = { field: btn.fieldName, search: searchText || null, method: 'form' };

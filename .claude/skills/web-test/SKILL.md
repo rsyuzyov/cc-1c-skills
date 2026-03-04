@@ -226,12 +226,19 @@ await fillFields({
 Returns `{ filled: [{ field, ok, value, method }], form: {...} }`.
 Method is one of: `'toggle'` | `'radio'` | `'paste'` | `'dropdown'` | `'form'` | `'typeahead'`
 
-#### `selectValue(field, search)` → form state with `selected`
+#### `selectValue(field, search, opts?)` → form state with `selected`
 Select a value from reference field via dropdown or selection form. More reliable than `fillFields` for reference fields that need exact selection from a catalog.
 
 ```js
 await selectValue('Организация', 'Конфетпром');
 // result.selected = { field: 'Организация', search: 'Конфетпром', method: 'dropdown'|'form' }
+```
+
+For **composite-type fields** (accepting multiple types), specify `type` to first select the type, then the value:
+```js
+await selectValue('Документ', '0000-000601', { type: 'Реализация (акт' });
+// Clears field → opens type dialog → picks type via Ctrl+F → picks value from selection form
+// result.selected = { field: 'Документ', search: '0000-000601', type: 'Реализация (акт', method: 'form' }
 ```
 
 Also supports DCS labels — auto-enables the paired checkbox.
