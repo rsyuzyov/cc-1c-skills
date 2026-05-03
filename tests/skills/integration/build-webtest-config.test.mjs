@@ -603,21 +603,44 @@ export const steps = [
   },
 
   // ── 4. DCS for report ──
+  // Сначала добавляем макет ОсновнаяСхемаКомпоновкиДанных к отчёту (регистрируется
+  // в Reports/ОстаткиТоваров.xml + автоматически выставляется MainDataCompositionSchema),
+  // затем skd-compile наполняет его содержимым.
+  {
+    name: 'template-add: ОсновнаяСхемаКомпоновкиДанных к отчёту ОстаткиТоваров',
+    script: 'template-add/scripts/add-template',
+    args: {
+      '-ObjectName': 'ОстаткиТоваров',
+      '-TemplateName': 'ОсновнаяСхемаКомпоновкиДанных',
+      '-TemplateType': 'DataCompositionSchema',
+      '-SrcDir': '{workDir}/Reports',
+    },
+  },
   {
     name: 'skd-compile: Схема отчёта ОстаткиТоваров',
     script: 'skd-compile/scripts/skd-compile',
     input: {
       dataSets: [{
         name: 'НаборДанных',
-        type: 'Query',
-        query: 'SELECT Номенклатура, Количество, Цена, Сумма FROM Document.ПриходнаяНакладная.Товары',
+        query: 'ВЫБРАТЬ\n\tТовары.Ссылка КАК Документ,\n\tТовары.Номенклатура КАК Номенклатура,\n\tТовары.Количество КАК Количество,\n\tТовары.Цена КАК Цена,\n\tТовары.Сумма КАК Сумма\nИЗ\n\tДокумент.ПриходнаяНакладная.Товары КАК Товары',
+        fields: [
+          { field: 'Документ', title: 'Документ', type: 'DocumentRef.ПриходнаяНакладная' },
+          { field: 'Номенклатура', title: 'Номенклатура', type: 'CatalogRef.Номенклатура' },
+          { field: 'Количество', title: 'Количество', type: 'decimal(15,3)' },
+          { field: 'Цена', title: 'Цена', type: 'decimal(15,2)' },
+          { field: 'Сумма', title: 'Сумма', type: 'decimal(15,2)' },
+        ],
       }],
-      fields: [
-        { name: 'Номенклатура', title: 'Номенклатура' },
-        { name: 'Количество', title: 'Количество' },
-        { name: 'Цена', title: 'Цена' },
-        { name: 'Сумма', title: 'Сумма' },
-      ],
+      totalFields: ['Количество: Сумма', 'Сумма: Сумма'],
+      settingsVariants: [{
+        name: 'Основной',
+        title: 'Остатки товаров',
+        settings: {
+          selection: ['Номенклатура', 'Количество', 'Сумма', 'Auto'],
+          filter: ['Номенклатура = _ @off @user @quickAccess'],
+          structure: 'Номенклатура > details',
+        },
+      }],
     },
     args: { '-DefinitionFile': '{inputFile}', '-OutputPath': '{workDir}/Reports/ОстаткиТоваров/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml' },
     validate: { script: 'skd-validate/scripts/skd-validate', flag: '-TemplatePath', path: 'Reports/ОстаткиТоваров/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml' },
