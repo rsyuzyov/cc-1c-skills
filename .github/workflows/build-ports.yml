@@ -1,0 +1,96 @@
+name: Build port branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude/skills/**'
+      - 'scripts/switch.py'
+      - '.github/templates/README.port.md.tmpl'
+      - '.github/workflows/build-ports.yml'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: claude-code
+            runtime: python
+            branch: port-claude-code-py
+            label: Claude Code
+            target_dir: .claude/skills
+          - platform: cursor
+            runtime: powershell
+            branch: port-cursor
+            label: Cursor
+            target_dir: .cursor/skills
+          - platform: cursor
+            runtime: python
+            branch: port-cursor-py
+            label: Cursor
+            target_dir: .cursor/skills
+          - platform: codex
+            runtime: powershell
+            branch: port-codex
+            label: Codex
+            target_dir: .codex/skills
+          - platform: codex
+            runtime: python
+            branch: port-codex-py
+            label: Codex
+            target_dir: .codex/skills
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build skills tree for ${{ matrix.platform }} (${{ matrix.runtime }})
+        run: |
+          python scripts/switch.py "${{ matrix.platform }}" \
+            --project-dir build \
+            --runtime "${{ matrix.runtime }}"
+
+      - name: Render port README
+        env:
+          PLATFORM_LABEL: ${{ matrix.label }}
+          PLATFORM_DIR: ${{ matrix.target_dir }}
+          RUNTIME_LABEL: ${{ matrix.runtime == 'powershell' && 'PowerShell' || 'Python' }}
+          COMMIT_SHA: ${{ github.sha }}
+          MAIN_REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          sed \
+            -e "s|{{PLATFORM_LABEL}}|${PLATFORM_LABEL}|g" \
+            -e "s|{{PLATFORM_DIR}}|${PLATFORM_DIR}|g" \
+            -e "s|{{RUNTIME_LABEL}}|${RUNTIME_LABEL}|g" \
+            -e "s|{{COMMIT_SHA}}|${COMMIT_SHA}|g" \
+            -e "s|{{MAIN_REPO_URL}}|${MAIN_REPO_URL}|g" \
+            .github/templates/README.port.md.tmpl > build/README.md
+
+      - name: Copy LICENSE
+        run: cp LICENSE build/LICENSE
+
+      - name: Force-push orphan snapshot to ${{ matrix.branch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd build
+          git init -q -b master
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Auto-build: ${{ matrix.platform }} (${{ matrix.runtime }}) from ${GITHUB_SHA::7}"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            "master:${{ matrix.branch }}"
