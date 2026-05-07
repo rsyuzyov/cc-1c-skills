@@ -12,8 +12,7 @@
         "ref": "port-codex"
       },
       "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "OFF"
+        "installation": "AVAILABLE"
       },
       "category": "Development",
       "interface": {
@@ -28,8 +27,7 @@
         "ref": "port-codex-py"
       },
       "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "OFF"
+        "installation": "AVAILABLE"
       },
       "category": "Development",
       "interface": {
