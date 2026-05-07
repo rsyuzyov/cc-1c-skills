@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# switch.py v1.3 — Переключение навыков 1С между AI-платформами и рантаймами
+# switch.py v1.4 — Переключение навыков 1С между AI-платформами и рантаймами
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 """
 Копирует (или создаёт ссылки на) навыки из .claude/skills/ на другие AI-платформы
@@ -42,6 +42,11 @@ PLATFORMS = {
 }
 
 SOURCE_PREFIX = '.claude/skills'
+
+# ${CLAUDE_SKILL_DIR}/../<other>/<rest>  — cross-skill reference (more specific, match first)
+RX_SKILL_DIR_CROSS = re.compile(r'\$\{CLAUDE_SKILL_DIR\}/\.\./([a-z][a-z0-9-]+)/')
+# ${CLAUDE_SKILL_DIR}/<rest>  — same-skill reference
+SKILL_DIR_VAR = '${CLAUDE_SKILL_DIR}/'
 
 # Рекомендуемые записи для .gitignore целевого проекта
 GITIGNORE_RECOMMENDATIONS = [
@@ -179,9 +184,22 @@ def is_different_dir(dir1, dir2):
 # ---------------------------------------------------------------------------
 # Transformations
 # ---------------------------------------------------------------------------
-def rewrite_paths(content, source_prefix, target_prefix):
-    """Replace .claude/skills/ path prefix with target platform prefix."""
-    return content.replace(source_prefix + '/', target_prefix + '/')
+def rewrite_paths(content, platform, target_prefix, skill_name):
+    """Resolve ${CLAUDE_SKILL_DIR} placeholders to target platform prefix.
+
+    For claude-code target, leave ${CLAUDE_SKILL_DIR} untouched — Claude Code
+    substitutes it natively at invocation time. For all other targets,
+    expand to a literal path:
+      ${CLAUDE_SKILL_DIR}/<rest>            → <target_prefix>/<skill_name>/<rest>
+      ${CLAUDE_SKILL_DIR}/../<other>/<rest> → <target_prefix>/<other>/<rest>
+    """
+    if platform == 'claude-code':
+        return content
+    # Cross-skill first (more specific pattern)
+    content = RX_SKILL_DIR_CROSS.sub(f'{target_prefix}/\\1/', content)
+    # Then same-skill
+    content = content.replace(SKILL_DIR_VAR, f'{target_prefix}/{skill_name}/')
+    return content
 
 
 def switch_runtime_content(content, target_runtime):
@@ -305,7 +323,7 @@ def cmd_install(platform, runtime, project_dir):
             with open(md_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            new_content = rewrite_paths(content, SOURCE_PREFIX, target_prefix)
+            new_content = rewrite_paths(content, platform, target_prefix, skill_name)
 
             # Apply runtime switch (skip for single-runtime skills
             # where target runtime is not available)
