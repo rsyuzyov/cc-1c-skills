@@ -10,9 +10,7 @@
 
 > **PS** — версия со скриптами на PowerShell (стандартная, для Windows). **Py** — версия со скриптами на Python (если PowerShell не подходит). Можно начать с **PS** — это основной вариант.
 
-**Claude Code** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/main) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-claude-code-py) — **Cursor** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-cursor) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-cursor-py) — **Codex** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-codex) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-codex-py)
-
-[Все варианты и инструкции →](#поддерживаемые-платформы)
+**Claude Code** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/main) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-claude-code-py) — **Cursor** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-cursor) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-cursor-py) — **Codex** [PS](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-codex) · [Py](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/port-codex-py) — [Другие платформы →](#поддерживаемые-платформы)
 
 ## Быстрый старт
 
