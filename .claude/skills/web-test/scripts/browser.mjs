@@ -1,4 +1,4 @@
-// web-test browser v1.9 — Playwright browser management for 1C web client
+// web-test browser v1.10 — Playwright browser management for 1C web client
 // Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 /**
  * Playwright browser management for 1C web client.
@@ -36,6 +36,12 @@ let recorder = null; // { cdp, ffmpeg, startTime, outputPath, ffmpegError, capti
 let lastCaptions = []; // captions from the last completed recording (for addNarration)
 let lastRecordingDuration = null; // wall-clock duration of the last recording (seconds)
 let highlightMode = false;
+
+// Multi-context registry: name → { context, page, sessionPrefix, seanceId, recorder, lastCaptions, lastRecordingDuration, highlightMode }
+// Populated by createContext(); module-level vars above mirror the active slot.
+// connect() does NOT use this Map — it preserves legacy single-session behavior for exec/run/start.
+const contexts = new Map();
+let activeContextName = null;
 
 const LOAD_TIMEOUT = 60000;
 const INIT_TIMEOUT = 60000;
@@ -163,13 +169,41 @@ export async function connect(url, { extensionPath } = {}) {
  * Sends POST /e1cib/logout to release the license before closing.
  */
 export async function disconnect() {
-  // Auto-stop recording if active (prevents orphaned ffmpeg)
+  // Multi-context path: stop recordings + logout each slot before closing browser
+  if (contexts.size > 0) {
+    // Save current active first so iteration is consistent
+    _saveActiveSlot();
+    for (const [name, slot] of contexts.entries()) {
+      // Stop recording per slot if any
+      if (slot.recorder) {
+        _activateSlot(name);
+        try { await stopRecording(); } catch {}
+        // re-save in case stopRecording mutated state
+        _saveActiveSlot();
+      }
+    }
+    for (const [, slot] of contexts.entries()) {
+      if (slot.page && !slot.page.isClosed() && slot.seanceId && slot.sessionPrefix) {
+        try {
+          const logoutUrl = `${slot.sessionPrefix}/e1cib/logout?seanceId=${slot.seanceId}`;
+          await slot.page.evaluate(async (url) => {
+            await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"root":{}}' });
+          }, logoutUrl);
+          await slot.page.waitForTimeout(500);
+        } catch {}
+      }
+    }
+    contexts.clear();
+    activeContextName = null;
+  }
+
+  // Single-session path (connect): auto-stop recording if active
   if (recorder) {
     try { await stopRecording(); } catch {}
   }
 
   if (browser) {
-    // Graceful logout — release the 1C license
+    // Graceful logout — release the 1C license (single-session connect path)
     if (page && !page.isClosed() && seanceId && sessionPrefix) {
       try {
         const logoutUrl = `${sessionPrefix}/e1cib/logout?seanceId=${seanceId}`;
@@ -226,6 +260,142 @@ export function detach() {
 /** Get current session state (for saving between reconnections). */
 export function getSession() {
   return { sessionPrefix, seanceId };
+}
+
+// ============================================================
+// Multi-context support (used by run.mjs cmdTest only)
+// ============================================================
+
+/**
+ * Save current module-level state into the active slot before switching.
+ * No-op if no active slot.
+ */
+function _saveActiveSlot() {
+  if (!activeContextName) return;
+  const slot = contexts.get(activeContextName);
+  if (!slot) return;
+  slot.page = page;
+  slot.sessionPrefix = sessionPrefix;
+  slot.seanceId = seanceId;
+  slot.recorder = recorder;
+  slot.lastCaptions = lastCaptions;
+  slot.lastRecordingDuration = lastRecordingDuration;
+  slot.highlightMode = highlightMode;
+}
+
+/** Load a slot's state into module-level vars and mark it active. */
+function _activateSlot(name) {
+  const slot = contexts.get(name);
+  if (!slot) throw new Error(`Context "${name}" not found. Create it via createContext() first.`);
+  page = slot.page;
+  sessionPrefix = slot.sessionPrefix;
+  seanceId = slot.seanceId;
+  recorder = slot.recorder;
+  lastCaptions = slot.lastCaptions || [];
+  lastRecordingDuration = slot.lastRecordingDuration;
+  highlightMode = slot.highlightMode || false;
+  activeContextName = name;
+}
+
+/** Attach 1C session listeners to a page, writing into the given slot. */
+function _attachSessionListeners(pg, slot, name) {
+  pg.on('dialog', dialog => dialog.accept().catch(() => {}));
+  pg.on('request', req => {
+    if (slot.seanceId) return;
+    const m = req.url().match(/^(https?:\/\/[^/]+\/[^/]+\/[^/]+)\/e1cib\/.+[?&]seanceId=([^&]+)/);
+    if (m) {
+      slot.sessionPrefix = m[1];
+      slot.seanceId = m[2];
+      if (activeContextName === name) {
+        sessionPrefix = m[1];
+        seanceId = m[2];
+      }
+    }
+  });
+}
+
+/**
+ * Create (or navigate) a named browser context.
+ * First call launches Chromium via chromium.launch() (NOT launchPersistentContext) so that
+ * subsequent calls can create additional isolated BrowserContexts in the same process.
+ * Trade-off: 1C browser extension is loaded via --load-extension (process-level) rather than
+ * persistent profile.
+ *
+ * Use this from run.mjs cmdTest only — exec/run/start use connect() and stay on the
+ * legacy persistent-context path.
+ */
+export async function createContext(name, url, { extensionPath } = {}) {
+  if (contexts.has(name)) {
+    await setActiveContext(name);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: LOAD_TIMEOUT });
+    try { await page.waitForSelector('#themesCell_theme_0', { timeout: INIT_TIMEOUT }); }
+    catch { await page.waitForTimeout(5000); }
+    await closeModals();
+    return await getPageState();
+  }
+
+  // First context: launch browser. Subsequent: reuse existing browser.
+  if (!browser) {
+    const extPath = findExtension(extensionPath);
+    const launchArgs = ['--start-maximized'];
+    if (extPath) {
+      launchArgs.push('--disable-extensions-except=' + extPath, '--load-extension=' + extPath);
+    }
+    browser = await chromium.launch({ headless: false, args: launchArgs });
+  } else if (typeof browser.newContext !== 'function') {
+    throw new Error('createContext: existing browser was created via connect()/launchPersistentContext and cannot host additional isolated contexts. Call disconnect() first.');
+  }
+
+  // Save current active before switching
+  _saveActiveSlot();
+
+  const newCtx = await browser.newContext({
+    viewport: null,
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const newPage = await newCtx.newPage();
+
+  const slot = {
+    context: newCtx,
+    page: newPage,
+    sessionPrefix: null,
+    seanceId: null,
+    recorder: null,
+    lastCaptions: [],
+    lastRecordingDuration: null,
+    highlightMode: false,
+  };
+  contexts.set(name, slot);
+
+  _attachSessionListeners(newPage, slot, name);
+  _activateSlot(name);
+
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: LOAD_TIMEOUT });
+  try { await page.waitForSelector('#themesCell_theme_0', { timeout: INIT_TIMEOUT }); }
+  catch { await page.waitForTimeout(5000); }
+  await closeModals();
+
+  return await getPageState();
+}
+
+/** Switch the active context. Subsequent browser API calls operate on this context's page. */
+export async function setActiveContext(name) {
+  if (activeContextName === name) return;
+  if (!contexts.has(name)) throw new Error(`Context "${name}" not found. Available: [${[...contexts.keys()].join(', ')}]`);
+  _saveActiveSlot();
+  _activateSlot(name);
+}
+
+export function listContexts() {
+  return [...contexts.keys()];
+}
+
+export function getActiveContext() {
+  return activeContextName;
+}
+
+export function hasContext(name) {
+  return contexts.has(name);
 }
 
 /**

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// web-test run v1.7 — CLI runner for 1C web client automation
+// web-test run v1.8 — CLI runner for 1C web client automation
 // Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 /**
  * CLI runner for 1C web client automation.
@@ -107,6 +107,27 @@ async function handleRequest(req, res) {
 // ============================================================
 // buildContext: assemble browser API with error wrapping
 // ============================================================
+
+/**
+ * Build a per-context wrapper: same shape as buildContext output, but every call
+ * is prefixed with `setActiveContext(name)` so the test can interleave actions
+ * across contexts (`ctx.a.click(...); ctx.b.click(...)`).
+ */
+function buildScopedContext(name, { noRecord = false } = {}) {
+  const inner = buildContext({ noRecord });
+  const scoped = {};
+  for (const [k, v] of Object.entries(inner)) {
+    if (typeof v === 'function') {
+      scoped[k] = async (...args) => {
+        await browser.setActiveContext(name);
+        return v(...args);
+      };
+    } else {
+      scoped[k] = v;
+    }
+  }
+  return scoped;
+}
 
 function buildContext({ noRecord = false } = {}) {
   const ctx = {};
@@ -373,10 +394,25 @@ async function cmdTest(rawArgs) {
     const mod = await import('file:///' + configPath.replace(/\\/g, '/'));
     config = mod.default || {};
   }
-  if (!url) {
-    url = config.url || config.contexts?.[config.defaultContext || Object.keys(config.contexts || {})[0]]?.url;
+  // Build context registry: name → url. Supports config.contexts or single config.url / CLI url.
+  // CLI url overrides default context's url.
+  const contextSpecs = {}; // name → { url }
+  let defaultContextName = 'default';
+  if (config.contexts && typeof config.contexts === 'object' && Object.keys(config.contexts).length) {
+    for (const [n, spec] of Object.entries(config.contexts)) {
+      contextSpecs[n] = { url: spec.url };
+    }
+    defaultContextName = config.defaultContext || Object.keys(config.contexts)[0];
+    if (url) contextSpecs[defaultContextName] = { url }; // CLI override of default
+  } else {
+    const fallbackUrl = url || config.url;
+    if (!fallbackUrl) die('No URL provided and no webtest.config.mjs found');
+    contextSpecs.default = { url: fallbackUrl };
   }
-  if (!url) die('No URL provided and no webtest.config.mjs found');
+  if (!contextSpecs[defaultContextName]) {
+    die(`defaultContext "${defaultContextName}" not found in contexts: [${Object.keys(contextSpecs).join(', ')}]`);
+  }
+  if (!url) url = contextSpecs[defaultContextName].url;
 
   // Apply config defaults (CLI flags override)
   if (!tags && config.tags) tags = config.tags;
@@ -421,6 +457,8 @@ async function cmdTest(rawArgs) {
       teardown: mod.teardown,
       fn: mod.default,
       param: undefined,
+      context: mod.context || null,
+      contexts: Array.isArray(mod.contexts) ? mod.contexts : null,
     };
     if (base.only) hasOnly = true;
     if (Array.isArray(mod.params) && mod.params.length) {
@@ -461,11 +499,19 @@ async function cmdTest(rawArgs) {
   // Prepare: infrastructure hooks (no browser)
   if (hooks.prepare) await hooks.prepare();
 
-  try {
-    // Connect
-    await browser.connect(url);
+  // Lazy context creation: ensures the named browser context exists, creating it on first request.
+  async function ensureContext(name) {
+    if (browser.hasContext(name)) return;
+    const spec = contextSpecs[name];
+    if (!spec) throw new Error(`Unknown context "${name}". Defined: [${Object.keys(contextSpecs).join(', ')}]`);
+    await browser.createContext(name, spec.url);
+  }
 
-    // Build context
+  try {
+    // Connect: create the default context up front (so beforeAll has a working browser)
+    await ensureContext(defaultContextName);
+
+    // Build context — flat API for single-context tests; reused across tests via setActiveContext
     const ctx = buildContext({ noRecord: true });
     ctx.assert = createAssertions();
     ctx.log = (...a) => { /* per-test, overridden below */ };
@@ -482,6 +528,22 @@ async function cmdTest(rawArgs) {
         W.write(`  \u25CB ${t.name}${reason ? ` (skip: ${reason})` : ' (skip)'}\n`);
         results.push({ name: t.name, file: t.file, tags: t.tags, status: 'skipped', duration: 0, attempts: 0, steps: [], output: '', error: null, screenshot: null });
         skipCount++;
+        continue;
+      }
+
+      // Resolve test's contexts: multi (t.contexts) or single (t.context || default).
+      // Lazy-create them and set active to the primary one.
+      const testContextNames = t.contexts && t.contexts.length
+        ? t.contexts
+        : [t.context || defaultContextName];
+      try {
+        for (const cn of testContextNames) await ensureContext(cn);
+        await browser.setActiveContext(testContextNames[0]);
+      } catch (e) {
+        W.write(`  ✗ ${t.name} (context setup failed: ${e.message})\n`);
+        results.push({ name: t.name, file: t.file, tags: t.tags, status: 'failed', duration: 0, attempts: 0, steps: [], output: '', error: { message: e.message }, screenshot: null });
+        failCount++;
+        if (opts.bail) break;
         continue;
       }
 
@@ -532,6 +594,15 @@ async function cmdTest(rawArgs) {
           }
         };
 
+        // For multi-context tests, expose ctx.<name> per-context wrappers
+        const scopedKeys = [];
+        if (t.contexts && t.contexts.length) {
+          for (const cn of t.contexts) {
+            ctx[cn] = buildScopedContext(cn, { noRecord: true });
+            scopedKeys.push(cn);
+          }
+        }
+
         try {
           // beforeEach
           if (hooks.beforeEach) await hooks.beforeEach(ctx);
@@ -548,8 +619,11 @@ async function cmdTest(rawArgs) {
           if (t.teardown) try { await t.teardown(ctx); } catch {}
           // afterEach
           if (hooks.afterEach) try { await hooks.afterEach(ctx); } catch {}
-          // Built-in state reset
-          await resetState(ctx);
+          // Built-in state reset across all contexts the test used
+          for (const cn of testContextNames) {
+            try { await browser.setActiveContext(cn); await resetState(ctx); } catch {}
+          }
+          for (const k of scopedKeys) delete ctx[k];
 
           if (videoFile) {
             try { await browser.stopRecording(); } catch {}
@@ -564,8 +638,11 @@ async function cmdTest(rawArgs) {
           if (t.teardown) try { await t.teardown(ctx); } catch {}
           // afterEach (always)
           if (hooks.afterEach) try { await hooks.afterEach(ctx); } catch {}
-          // Built-in state reset
-          await resetState(ctx);
+          // Built-in state reset across all contexts the test used
+          for (const cn of testContextNames) {
+            try { await browser.setActiveContext(cn); await resetState(ctx); } catch {}
+          }
+          for (const k of scopedKeys) delete ctx[k];
 
           // Screenshot on failure (skip if strategy is 'off')
           let shotFile = e.onecError?.screenshot;
