@@ -38,6 +38,27 @@ export default async function({ navigateSection, openCommand, clickElement, sele
     await closeForm({ save: false });
   });
 
+  await step('auto-history: choiceHistoryOnInput=Auto → method=dropdown даже на ссылке без quickChoice', async () => {
+    // Менеджер и Контрагент оба ссылаются на CatalogRef.Контрагенты (quickChoice=false).
+    // Отличие — choiceHistoryOnInput:
+    //   Контрагент: 'DontUse' → typeahead-dropdown подавлен → selectValue идёт в form
+    //   Менеджер:   'Auto' (дефолт) → typeahead активен → selectValue остаётся в dropdown
+    // Шаг подтверждает, что флаг управляет path внутри selectValue.
+    await navigateSection('Склад');
+    await openCommand('Приходная накладная');
+    await clickElement('Создать');
+
+    const r = await selectValue('Менеджер', 'ООО Юг');
+    log(`Менеджер (Auto): method=${r.selected?.method}`);
+    assert.equal(r.selected?.method, 'dropdown',
+      'Auto-история включена → typeahead-dropdown → method=dropdown (vs form у Контрагент)');
+
+    const field = findField(r, 'Менеджер');
+    assert.includes(field?.value || '', 'Юг', 'значение установилось из dropdown');
+
+    await closeForm({ save: false });
+  });
+
   await step('clear: selectValue с пустым search → Shift+F4', async () => {
     await navigateSection('Склад');
     await openCommand('Приходная накладная');

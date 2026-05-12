@@ -151,6 +151,11 @@ export const steps = [
         // (для 03-fillfields/direct-edit-form). Ручной ввод запрещён,
         // выбор только через pick-кнопку → форма выбора.
         { name: 'Поставщик', type: 'CatalogRef.Контрагенты' },
+        // Менеджер — ссылка с дефолтным choiceHistoryOnInput=Auto (история включена,
+        // для 04-selectvalue/show-all-form). После первого выбора платформа
+        // запоминает значение и при повторном вводе показывает dropdown
+        // с историей + кнопку «Показать все» → форма выбора.
+        { name: 'Менеджер', type: 'CatalogRef.Контрагенты' },
         { name: 'Комментарий', type: 'String', length: 200 },
       ],
       tabularSections: [{
@@ -607,6 +612,7 @@ export const steps = [
         { input: 'Источник', path: 'Объект.Источник', title: 'Источник' },
         // textEdit:false — ручной ввод запрещён, только pick → форма выбора
         { input: 'Поставщик', path: 'Объект.Поставщик', title: 'Поставщик', textEdit: false },
+        { input: 'Менеджер', path: 'Объект.Менеджер', title: 'Менеджер' },
         { input: 'Комментарий', path: 'Объект.Комментарий', title: 'Комментарий' },
         { table: 'Товары', path: 'Объект.Товары', title: 'Товары', changeRowSet: true, columns: [
           { input: 'Номенклатура', path: 'Объект.Товары.Номенклатура', title: 'Номенклатура' },
